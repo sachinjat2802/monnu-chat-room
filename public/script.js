@@ -11,6 +11,9 @@ myVideo.muted = true;
 const peers = {};
 
 let myVideoStream;
+let screenStream;
+let myName = prompt("Please enter your name:") || "User";
+
 navigator.mediaDevices.getUserMedia({
   video: true,
   audio: true
@@ -19,17 +22,18 @@ navigator.mediaDevices.getUserMedia({
   addVideoStream(myVideo, stream);
 
   myPeer.on('call', call => {
-    call.answer(stream);
+    call.answer(myVideoStream);
     const video = document.createElement('video');
     call.on('stream', userVideoStream => {
       addVideoStream(video, userVideoStream);
     });
   });
 
-  socket.on('user-connected', userId => {
+  socket.on('user-connected', (userId, userName) => {
     setTimeout(() => {
-      connectToNewUser(userId, stream);
+      connectToNewUser(userId, myVideoStream);
     }, 1000); // Give peer server time
+    appendMessage(`<em>${userName} joined the room</em>`);
   });
 
   // chat functionality
@@ -37,26 +41,27 @@ navigator.mediaDevices.getUserMedia({
 
   text.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && text.value.length !== 0) {
-      socket.emit('message', text.value);
+      socket.emit('message', text.value, myName);
       text.value = '';
     }
   });
 
-  socket.on("createMessage", message => {
+  socket.on("createMessage", (message, senderName) => {
     let ul = document.querySelector('.messages');
     let li = document.createElement('li');
-    li.innerHTML = `<strong>User</strong>${message}`;
+    li.innerHTML = `<strong>${senderName}</strong>${message}`;
     ul.append(li);
     scrollToBottom();
-  })
+  });
 });
 
-socket.on('user-disconnected', userId => {
+socket.on('user-disconnected', (userId, userName) => {
   if (peers[userId]) peers[userId].close();
+  appendMessage(`<em>${userName} left the room</em>`);
 });
 
 myPeer.on('open', id => {
-  socket.emit('join-room', ROOM_ID, id);
+  socket.emit('join-room', ROOM_ID, id, myName);
 });
 
 function connectToNewUser(userId, stream) {
@@ -120,6 +125,68 @@ const playStop = () => {
     setStopVideo();
     myVideoStream.getVideoTracks()[0].enabled = true;
   }
+}
+
+const shareScreen = async () => {
+  try {
+    if (!screenStream) {
+      screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true
+      });
+
+      let videoTrack = screenStream.getVideoTracks()[0];
+
+      videoTrack.onended = () => {
+        stopScreenShare();
+      };
+
+      for (let userId in peers) {
+        let sender = peers[userId].peerConnection.getSenders().find(s => s.track.kind == videoTrack.kind);
+        if (sender) {
+          sender.replaceTrack(videoTrack);
+        }
+      }
+
+      // Update local video
+      myVideo.srcObject = screenStream;
+    } else {
+      stopScreenShare();
+    }
+  } catch (error) {
+    console.error("Error sharing screen: ", error);
+  }
+}
+
+const stopScreenShare = () => {
+  if (screenStream) {
+    screenStream.getTracks().forEach(track => track.stop());
+    screenStream = null;
+
+    let videoTrack = myVideoStream.getVideoTracks()[0];
+    for (let userId in peers) {
+      let sender = peers[userId].peerConnection.getSenders().find(s => s.track.kind == videoTrack.kind);
+      if (sender) {
+        sender.replaceTrack(videoTrack);
+      }
+    }
+
+    // Revert local video
+    myVideo.srcObject = myVideoStream;
+  }
+}
+
+const leaveMeeting = () => {
+  socket.disconnect();
+  myPeer.destroy();
+  document.body.innerHTML = "<h1 style='text-align:center; margin-top:20%; color:white;'>You left the meeting.</h1>";
+}
+
+function appendMessage(htmlContent) {
+  let ul = document.querySelector('.messages');
+  let li = document.createElement('li');
+  li.innerHTML = htmlContent;
+  ul.append(li);
+  scrollToBottom();
 }
 
 const setMuteButton = () => {
